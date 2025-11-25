@@ -33,23 +33,8 @@ A alto nivel, el ciclo es:
 
 ---
 
-## 2. Arquitectura del proyecto
 
-```text
-sniper_flow_bot/
-  ├── main.py
-  ├── config.py
-  ├── display.py
-  ├── core/
-  │   ├── connector.py
-  │   ├── portfolio.py
-  │   └── models.py
-  ├── analysis/
-  │   ├── book_imbalance.py
-  │   └── cvd_calc.py
-  └── strategy/
-      └── scalper_logic.py
-```
+
 
 ### 2.1 `main.py` — Orquestador asíncrono
 
