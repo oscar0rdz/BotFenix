@@ -1,0 +1,413 @@
+# BotFenix — Sniper Flow Scalper para Binance Futures (Order Flow + CVD/Imbalance)
+<p align="center">
+  <img src="docs/botfenix-demo.gif" alt="Demo BotFenix - scalping con CVD/Imbalance" />
+</p>
+
+BotFenix es un bot de **scalping cuantitativo** para futuros de criptomonedas en Binance, centrado en la **microestructura del mercado**:
+
+- Se alimenta de **libro de órdenes (order book)** y **trades ejecutados en tiempo real**.
+- Calcula **desequilibrio del libro (order book imbalance)** y **CVD (Cumulative Volume Delta)**.
+- Usa un sistema de **scoring** para decidir si vale la pena abrir un LONG o un SHORT.
+- Delega la ejecución y el cierre al módulo de **gestión de riesgo (portfolio)**.
+
+El objetivo no es aun una estrtegia en la que podria confiar para ganar dinero, sino **tener una lógica clara y medible**: entender cuándo entra, por qué entra y cómo se defiende cuando el mercado cambia.
+
+---
+
+## 1. Visión general del bot
+
+- **Exchange:** Binance Futures (USDT-margined).
+- **Activos típicos:** BTCUSDT, ETHUSDT, SOLUSDT (configurable).
+- **Marco temporal:** micro–escala (ticks / ~1s), sin depender de velas tradicionales.
+- **Tipo de estrategia:** scalper de **order flow** con gestión de riesgo estricta.
+- **Lenguaje:** Python 3 + `asyncio` (arquitectura asíncrona/concurrente).
+
+A alto nivel, el ciclo es:
+
+1. Escuchar datos en tiempo real (libro + trades).
+2. Construir un “snapshot” del mercado.
+3. Calcular **features de flujo de órdenes** (imbalance, CVD, volumen normalizado, etc.).
+4. Evaluar si hay señal de entrada con una lógica de **score**.
+5. Si hay señal, abrir posición con riesgo controlado.
+6. Gestionar activamente la posición hasta que se cierre (TP, SL, NO_PROGRESS, INVALID_IMB, etc.).
+
+---
+
+## 2. Arquitectura del proyecto
+
+```text
+sniper_flow_bot/
+  ├── main.py
+  ├── config.py
+  ├── display.py
+  ├── core/
+  │   ├── connector.py
+  │   ├── portfolio.py
+  │   └── models.py
+  ├── analysis/
+  │   ├── book_imbalance.py
+  │   └── cvd_calc.py
+  └── strategy/
+      └── scalper_logic.py
+```
+
+### 2.1 `main.py` — Orquestador asíncrono
+
+- Inicia el bot y crea un **loop asíncrono por símbolo**.
+- Recibe los snapshots de mercado desde `connector.py`.
+- Llama a los módulos de `analysis/` para calcular indicadores.
+- Llama a `strategy/scalper_logic.py` para obtener señales.
+- Llama a `core/portfolio.py` para abrir/cerrar posiciones.
+
+### 2.2 `core/` — Conexión, modelos y gestión de riesgo
+
+- **`connector.py`**
+  - Gestiona WebSockets de Binance.
+  - Mantiene un `MarketSnapshot` por símbolo con:
+    - últimas cotizaciones,
+    - profundidad relevante del libro de órdenes,
+    - flujo de trades ejecutados recientes.
+
+- **`models.py`**
+  - Define estructuras como:
+    - `Position`: posición abierta (side, entry, SL, TP, timestamps, etc.).
+    - `Signal`: señal generada por la estrategia (side, score, razones).
+    - `TradeRecord`: resumen de trades cerrados para logging/backtesting.
+
+- **`portfolio.py`**
+  - Gestiona TODO el ciclo de vida de una posición:
+    - tamaño de la orden según riesgo (% del equity),
+    - envío de órdenes,
+    - TP parcial, SL, breakeven, trailing,
+    - salidas especiales: `INVALID_IMB`, `NO_PROGRESS`, `TIME_STOP` dinámico.
+
+### 2.3 `analysis/` — Cálculo de features de microestructura
+
+- **`book_imbalance.py`**
+  - Calcula el **desequilibrio del libro**:
+    - compara el volumen en varios niveles de bid vs ask,
+    - produce un valor entre -1 y 1 (aprox.) que indica presión pasiva neta.
+
+- **`cvd_calc.py`**
+  - Calcula el **CVD (Cumulative Volume Delta)**:
+    - suma volumen de trades agresores de compra y resta los de venta,
+    - mantiene tanto el valor acumulado como la pendiente reciente (`cvd_slope`).
+
+### 2.4 `strategy/scalper_logic.py` — Lógica de entrada
+
+- Recibe:
+  - precio actual,
+  - imbalance de libro,
+  - CVD actual y su pendiente,
+  - volatilidad normalizada,
+  - flags de contexto (p.ej. CVD extremo en contra).
+- Devuelve:
+  - `Signal(side="LONG" | "SHORT", score=..., reasons=[...])` si hay setup,
+  - o `None` si no hay nada que valga la pena.
+
+### 2.5 `config.py` — Panel de parámetros
+
+- Parámetros para:
+  - API keys, símbolos, leverage, tamaño mínimo.
+  - Riesgo por operación (`RISK_PER_TRADE_PCT`).
+  - Umbrales de score (`SCORE_MIN_FOR_CANDIDATE`, etc.).
+  - Filtros de contexto: `CVD_CONTEXT_ENABLE`, `INVALID_IMB_ENABLE`, `NO_PROGRESS_ENABLE`.
+  - Parámetros de TP/SL y tiempos de vida de los trades.
+
+---
+
+## 3. Estrategia: visión conceptual
+
+### 3.1 Tesis principal
+
+> Si en el libro de órdenes hay un **desequilibrio claro de liquidez pasiva** y, al mismo tiempo, el **flujo de órdenes agresivas (CVD)** empieza a empujar en la misma dirección, existe una ventana para capturar un **movimiento corto de precio con mejor probabilidad** que el azar.
+
+La estrategia **NO** se basa en:
+
+- Cruces de medias móviles,
+- RSI, MACD, ni “indicadores milagro” clásicos.
+
+En su lugar, usa:
+
+- **Order Book Imbalance** → ¿Dónde está “parada” la liquidez?  
+- **CVD + pendiente** → ¿Quién está golpeando a mercado? ¿Compradores o vendedores?  
+- **Volumen normalizado** → ¿Hay participación real o solo ruido?  
+
+### 3.2 Idea simplificada
+
+- **LONG ideal**:
+  - Libro cargado en bids (soporte pasivo fuerte).
+  - CVD empieza a girar al alza (`cvd_slope > 0`).
+  - Volumen suficiente para que el movimiento no sea una sola orden perdida.
+
+- **SHORT ideal**:
+  - Libro cargado en asks (resistencia pasiva fuerte).
+  - CVD gira a la baja (`cvd_slope < 0`).
+  - Volumen decente, no un mini-spike aislado.
+
+---
+
+## 4. Flujo completo de una operación (paso a paso)
+
+### 4.1 Construcción del snapshot
+
+Cada X milisegundos:
+
+1. `connector.py` actualiza:
+   - bids y asks relevantes,
+   - últimos trades ejecutados (side + volumen + precio).
+
+2. Se construye un `MarketSnapshot` con:
+   - `best_bid`, `best_ask`,
+   - estructura agregada del book,
+   - buffer de trades recientes.
+
+### 4.2 Cálculo de features de order flow
+
+- `book_imbalance.py` calcula un `imbalance`:
+  - cerca de +1 → mucha más liquidez del lado comprador,
+  - cerca de -1 → mucha más liquidez del lado vendedor.
+
+- `cvd_calc.py` actualiza:
+  - `cvd_value` (tendencia de fondo de agresión),
+  - `cvd_slope` (cambio reciente de agresión).
+
+- También se calcula un `vol_norm` (volumen normalizado):
+  - cercano a 0 → mercado apagado,
+  - cercano a 1 → mercado activo / volátil.
+
+### 4.3 Scoring y generación de señal
+
+En `scalper_logic.py`:
+
+1. Se evalúa el **contexto CVD**:
+   - Si el CVD de fondo es brutalmente contrario (muy positivo para SHORT o muy negativo para LONG), se **penaliza el score** o se descarta la señal (según la configuración).
+
+2. Se calculan componentes de score:
+   - componente CVD (dirección y fuerza),
+   - componente imbalance,
+   - componente volumen / actividad,
+   - componente de confirmación.
+
+3. Se suman para formar un `score_total` en 0–100 y se clamp:
+   - `score = max(0, min(100, score_total))`.
+
+4. Si `score < SCORE_MIN_FOR_CANDIDATE` → no se genera señal.  
+5. Si `score ≥ SCORE_MIN_FOR_CANDIDATE` → se genera un objeto `Signal` con:
+   - `side` (LONG/SHORT),
+   - `score`,
+   - `reasons`: lista de textos cortos explicando por qué se formó la señal
+     (ej. `["CVD_STRONG_BULLISH", "IMB_BALANCED_BID", "VOL_OK"]`).
+
+### 4.4 Entrada y gestión dinámica
+
+En `portfolio.py`:
+
+1. **Entrada**
+   - Calcula tamaño de la posición en función de:
+     - `balance` / `equity`,
+     - porcentaje de riesgo permitido,
+     - distancia al SL.
+   - Abre la posición vía API (order a mercado o límite, según la implementación).
+
+2. **Seguimiento en cada tick**
+   - Actualiza:
+     - `max_favorable_price` (MFE),
+     - `min_adverse_price` (MAE),
+     - vida de la posición (`age_sec`).
+
+   - Aplica la jerarquía de checks (típica):
+
+     1. TP parcial (`TP1_FAST`).
+     2. Breakeven / trailing.
+     3. `INVALID_IMB` (flip extremo del libro).
+     4. `NO_PROGRESS` (tuvo vida pero se apagó y devolvió demasiado).
+     5. `TIME_STOP` dinámico (último filtro de “ya basta”).
+
+3. **Cierre**
+   - Cuando alguna condición se cumple, se cierra la posición y se registra un `TradeRecord` con:
+     - precio de entrada y salida,
+     - PnL,
+     - razón de cierre (`TP1_FAST`, `SL`, `NO_PROGRESS`, `INVALID_IMB`, `TIME_STOP`).
+
+### 4.5 Registro y análisis posterior
+
+- Los trades se escriben en un CSV para poder:
+  - analizar PnL por reason,
+  - ver qué tipo de cierre domina,
+  - ajustar parámetros con datos reales.
+
+---
+
+## 5. Detalle de la lógica de entrada
+
+### 5.1 Check-list mental de la estrategia
+
+Para un LONG, típicamente la estrategia busca algo equivalente a:
+
+1. **Contexto razonable**  
+   - CVD de fondo **no** está totalmente en contra (o está penalizado en score si lo está).  
+   - No hay señales de libro completamente volcado contra el lado LONG.
+
+2. **Señal de desequilibrio pasivo**
+   - Imbalance en el libro a favor de compras (bids cargados).  
+   - El precio está operando cerca de esa zona de liquidez, no muy alejado.
+
+3. **Confirmación agresiva**
+   - CVD empieza a inclinarse al alza (`cvd_slope > 0`).  
+   - Se observa que los trades a mercado golpean más del lado comprador.
+
+4. **Actividad mínima**
+   - `vol_norm` apunta a que hay participación (no es un mercado muerto).
+
+5. **Score ≥ umbral**
+   - Si el score final supera `SCORE_MIN_FOR_CANDIDATE`, se permite abrir.
+
+Para SHORT es simétrico (imbalance y CVD en sentido contrario).
+
+### 5.2 Filtros de calidad
+
+- **Filtro CVD de contexto (`CVD_CONTEXT_ENABLE`)**  
+  Evita entrar contra un CVD de fondo extremo.  
+  Ejemplo: no tomar un LONG cuando el CVD acumulado está muy negativo y solo hay un rebote local.
+
+- **Umbral mínimo de score**  
+  Evita entradas de baja convicción: el bot prefiere **entrar menos veces pero en setups más claros**.
+
+---
+
+## 6. Cómo reacciona al cambio de mercado
+
+La lógica está pensada para reaccionar distinto según el régimen micro del mercado:
+
+### 6.1 Mercado con flujo fuerte (vol_norm alto)
+
+- **Time Stop más corto**: la posición no vive eternamente; si en un mercado muy activo el precio no se mueve a favor en un tiempo razonable, probablemente la idea inicial ya no tiene edge.
+- TP1 y trailing se alcanzan más a menudo; la gestión intenta capturar **tramos rápidos** y proteger rápido el capital.
+
+### 6.2 Flips violentos en el libro (`INVALID_IMB`)
+
+- Si el order book se voltea de forma brutal en contra de la posición (imbalance extremo sostenido varios ticks), se asume que:
+  - la liquidez pasiva clave desapareció o se movió,
+  - la tesis inicial dejó de ser válida.
+- El bot cierra la operación anticipadamente con razón `INVALID_IMB`.
+
+### 6.3 Trades que no despegan (`NO_PROGRESS`)
+
+- Caso típico:
+  - El precio se mueve un poco a favor (tienes MFE),  
+  - pero luego se queda absorbiendo y empieza a devolver parte de ese avance,  
+  - sin romper realmente hacia tu TP.
+- `NO_PROGRESS` detecta ese patrón:
+  - Solo se activa si hubo MFE suficiente,
+  - y si el giveback supera un umbral,
+  - y ha pasado un tiempo mínimo.
+- Se cierra el trade **antes** de que se convierta en un TIME_STOP grande y costoso.
+
+### 6.4 Rangos muertos / mercado plano
+
+- En rangos con poco flujo:
+  - el score tiende a ser más bajo,
+  - muchas posibles señales se filtran,
+  - la estrategia prefiere **no operar** que intercambiar comisiones por ruido.
+
+---
+
+## 7. Parámetros clave de la estrategia en `config.py`
+
+*(Los nombres concretos pueden variar, pero la idea es esta)*
+
+- **Score y filtros de entrada**
+  - `SCORE_MIN_FOR_CANDIDATE`  
+  - `CVD_CONTEXT_ENABLE`, `CVD_CONTEXT_ABS_MIN`, `CVD_CONTEXT_PENALTY`
+
+- **Gestión del trade**
+  - `TP1_FAST_TRIGGER_PCT`, `TP1_FAST_FRACTION`
+  - `BREAKEVEN_TRIGGER_PCT`
+  - `MAX_TRADE_LIFETIME_LOW_VOL_SEC`
+  - `MAX_TRADE_LIFETIME_HIGH_VOL_SEC`
+  - `VOL_NORM_HIGH_THRESHOLD`
+
+- **NO_PROGRESS**
+  - `NO_PROGRESS_ENABLE`
+  - `NO_PROGRESS_MIN_AGE_SEC`
+  - `NO_PROGRESS_MIN_MFE_PCT`
+  - `NO_PROGRESS_GIVEBACK_PCT`
+
+- **INVALID_IMB**
+  - `INVALID_IMB_ENABLE`
+  - `INVALID_IMB_THRESHOLD`
+  - `INVALID_IMB_CONSEC_SAMPLES`
+  - `INVALID_IMB_MIN_AGE_SEC`
+  - `INVALID_IMB_MIN_ADVERSE_TICKS`
+
+Ajustar estos parámetros requiere siempre mirar **estadísticas reales de trades** (CSV) y entender qué tipo de salida domina y por qué.
+
+---
+
+## 8. Instalación rápida (resumen)
+
+>  Ejecutar solo en **testnet** o con capital de riesgo que puedas perder.
+
+1. Clona el repositorio:
+
+```bash
+git clone https://github.com/tu_usuario/BotFenix.git
+cd BotFenix
+```
+
+2. Crea y activa un entorno virtual:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate  # Linux/Mac
+# .venv\Scripts\activate  # Windows
+```
+
+3. Instala dependencias:
+
+```bash
+pip install -r requirements.txt
+```
+
+4. Crea un archivo `.env` o ajusta `config.py` con:
+   - claves de Binance (idealmente testnet),
+   - símbolos a operar,
+   - riesgo y parámetros de estrategia.
+
+5. Ejecuta el bot:
+
+```bash
+python -m sniper_flow_bot.main
+```
+
+Revisa la consola y el CSV de trades para estudiar el comportamiento.
+
+---
+
+## 9. Limitaciones conocidas y trabajo futuro
+
+- La estrategia depende fuertemente de:
+  - calidad de los datos en tiempo real,
+  - latencia,
+  - régimen de mercado (rangos muy estrechos la castigan).
+- No hay un backtesting histórico nativo aún integrado en este repo:
+  - se sugiere exportar los trades y la telemetría para análisis estadístico externo.
+- Es un proyecto vivo:
+  - acepta ajustes en TP/SL,
+  - nuevas reglas de score,
+  - filtros multi–timeframe, etc.
+
+---
+
+## 10. Aviso de riesgo
+
+> Este código se proporciona **exclusivamente con fines educativos**.  
+> Operar futuros con apalancamiento es extremadamente riesgoso y puede llevar a pérdidas totales de capital.  
+> Nada en este repositorio constituye asesoría financiera.  
+> Usa el bot bajo tu propia responsabilidad y prueba siempre primero en **paper trading / testnet**.
+
+---
+
+BotFenix no promete resultados, promete **estructura y trazabilidad**:  
+cada entrada y cada salida buscan tener una lógica que puedas leer, cuestionar y mejorar.
