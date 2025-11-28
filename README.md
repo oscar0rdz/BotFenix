@@ -1,20 +1,21 @@
-# BotFenix — Sniper Flow Scalper para Binance Futures (Order Flow + CVD/Imbalance)
+# BotFenix —  Scalper para Binance Futures (Order Flow + CVD/Imbalance)
 <p align="center">
   <img src="docs/botfenix-demo.gif" alt="Demo BotFenix - scalping con CVD/Imbalance" />
 </p>
 
-BotFenix es un bot de **scalping cuantitativo** para futuros de criptomonedas en Binance, centrado en la **microestructura del mercado**:
+Estuve trabjando con este proyetco  es un bot de **scalping cuantitativo** para futuros de criptomonedas en Binance, centrado en la **microestructura del mercado** y viendo como es que reacciona con mis recursos una estregia asi  en un entorno real,Despues de distintos ajustes y ser objetivo almenos a mi con mis caracteristicas me resulata complicado poder decir que encunetrto consistencia suficenter para cosiderar ejecutra con dinero real pero entendiendo que es una cuestionde Fees y de tiempo de accion/reaccion lo que me dificulta aun mas lograr acumarl pnl de froms conistente 
+Lo implemnte de la siguiente manera :
 
 - Se alimenta de **libro de órdenes (order book)** y **trades ejecutados en tiempo real**.
 - Calcula **desequilibrio del libro (order book imbalance)** y **CVD (Cumulative Volume Delta)**.
 - Usa un sistema de **scoring** para decidir si vale la pena abrir un LONG o un SHORT.
 - Delega la ejecución y el cierre al módulo de **gestión de riesgo (portfolio)**.
 
-El objetivo no es aun una estrtegia en la que podria confiar para ganar dinero, sino **tener una lógica clara y medible**: entender cuándo entra, por qué entra y cómo se defiende cuando el mercado cambia.
+El objetivo no es aun una estrtegia en la que podria confiar para ganar dinero, sino **tener la lógica medible**: entender cuándo entra, por qué entra y cómo se defiende cuando el mercado cambia.
 
 ---
 
-## 1. Visión general del bot
+## Visión general del bot
 
 - **Exchange:** Binance Futures (USDT-margined).
 - **Activos típicos:** BTCUSDT, ETHUSDT, SOLUSDT (configurable).
@@ -36,7 +37,7 @@ A alto nivel, el ciclo es:
 
 
 
-### 2.1 `main.py` — Orquestador asíncrono
+### `main.py` — Orquestador asíncrono
 
 - Inicia el bot y crea un **loop asíncrono por símbolo**.
 - Recibe los snapshots de mercado desde `connector.py`.
@@ -44,7 +45,7 @@ A alto nivel, el ciclo es:
 - Llama a `strategy/scalper_logic.py` para obtener señales.
 - Llama a `core/portfolio.py` para abrir/cerrar posiciones.
 
-### 2.2 `core/` — Conexión, modelos y gestión de riesgo
+###  `core/` — Conexión, modelos y gestión de riesgo
 
 - **`connector.py`**
   - Gestiona WebSockets de Binance.
@@ -66,7 +67,7 @@ A alto nivel, el ciclo es:
     - TP parcial, SL, breakeven, trailing,
     - salidas especiales: `INVALID_IMB`, `NO_PROGRESS`, `TIME_STOP` dinámico.
 
-### 2.3 `analysis/` — Cálculo de features de microestructura
+###  `analysis/` — Cálculo de features de microestructura
 
 - **`book_imbalance.py`**
   - Calcula el **desequilibrio del libro**:
@@ -78,7 +79,7 @@ A alto nivel, el ciclo es:
     - suma volumen de trades agresores de compra y resta los de venta,
     - mantiene tanto el valor acumulado como la pendiente reciente (`cvd_slope`).
 
-### 2.4 `strategy/scalper_logic.py` — Lógica de entrada
+### `strategy/scalper_logic.py` — Lógica de entrada
 
 - Recibe:
   - precio actual,
@@ -90,7 +91,7 @@ A alto nivel, el ciclo es:
   - `Signal(side="LONG" | "SHORT", score=..., reasons=[...])` si hay setup,
   - o `None` si no hay nada que valga la pena.
 
-### 2.5 `config.py` — Panel de parámetros
+### `config.py` — Panel de parámetros
 
 - Parámetros para:
   - API keys, símbolos, leverage, tamaño mínimo.
@@ -101,9 +102,9 @@ A alto nivel, el ciclo es:
 
 ---
 
-## 3. Estrategia: visión conceptual
+##  Estrategia: visión conceptual
 
-### 3.1 Tesis principal
+###  Tesis principal
 
 > Si en el libro de órdenes hay un **desequilibrio claro de liquidez pasiva** y, al mismo tiempo, el **flujo de órdenes agresivas (CVD)** empieza a empujar en la misma dirección, existe una ventana para capturar un **movimiento corto de precio con mejor probabilidad** que el azar.
 
@@ -118,7 +119,7 @@ En su lugar, usa:
 - **CVD + pendiente** → ¿Quién está golpeando a mercado? ¿Compradores o vendedores?  
 - **Volumen normalizado** → ¿Hay participación real o solo ruido?  
 
-### 3.2 Idea simplificada
+###  Idea simplificada
 
 - **LONG ideal**:
   - Libro cargado en bids (soporte pasivo fuerte).
@@ -132,9 +133,9 @@ En su lugar, usa:
 
 ---
 
-## 4. Flujo completo de una operación (paso a paso)
+##  Flujo completo de una operación (paso a paso)
 
-### 4.1 Construcción del snapshot
+### Construcción del snapshot
 
 Cada X milisegundos:
 
@@ -147,7 +148,7 @@ Cada X milisegundos:
    - estructura agregada del book,
    - buffer de trades recientes.
 
-### 4.2 Cálculo de features de order flow
+###  Cálculo de features de order flow
 
 - `book_imbalance.py` calcula un `imbalance`:
   - cerca de +1 → mucha más liquidez del lado comprador,
@@ -161,7 +162,7 @@ Cada X milisegundos:
   - cercano a 0 → mercado apagado,
   - cercano a 1 → mercado activo / volátil.
 
-### 4.3 Scoring y generación de señal
+###  Scoring y generación de señal
 
 En `scalper_logic.py`:
 
@@ -184,7 +185,7 @@ En `scalper_logic.py`:
    - `reasons`: lista de textos cortos explicando por qué se formó la señal
      (ej. `["CVD_STRONG_BULLISH", "IMB_BALANCED_BID", "VOL_OK"]`).
 
-### 4.4 Entrada y gestión dinámica
+###  Entrada y gestión dinámica
 
 En `portfolio.py`:
 
@@ -215,7 +216,7 @@ En `portfolio.py`:
      - PnL,
      - razón de cierre (`TP1_FAST`, `SL`, `NO_PROGRESS`, `INVALID_IMB`, `TIME_STOP`).
 
-### 4.5 Registro y análisis posterior
+###  Registro y análisis posterior
 
 - Los trades se escriben en un CSV para poder:
   - analizar PnL por reason,
@@ -224,9 +225,9 @@ En `portfolio.py`:
 
 ---
 
-## 5. Detalle de la lógica de entrada
+##  Detalle de la lógica de entrada
 
-### 5.1 Check-list mental de la estrategia
+###  Check-list mental de la estrategia
 
 Para un LONG, típicamente la estrategia busca algo equivalente a:
 
@@ -250,7 +251,7 @@ Para un LONG, típicamente la estrategia busca algo equivalente a:
 
 Para SHORT es simétrico (imbalance y CVD en sentido contrario).
 
-### 5.2 Filtros de calidad
+### Filtros de calidad
 
 - **Filtro CVD de contexto (`CVD_CONTEXT_ENABLE`)**  
   Evita entrar contra un CVD de fondo extremo.  
@@ -261,7 +262,7 @@ Para SHORT es simétrico (imbalance y CVD en sentido contrario).
 
 ---
 
-## 6. Cómo reacciona al cambio de mercado
+##  Cómo reacciona al cambio de mercado
 
 La lógica está pensada para reaccionar distinto según el régimen micro del mercado:
 
@@ -270,14 +271,14 @@ La lógica está pensada para reaccionar distinto según el régimen micro del m
 - **Time Stop más corto**: la posición no vive eternamente; si en un mercado muy activo el precio no se mueve a favor en un tiempo razonable, probablemente la idea inicial ya no tiene edge.
 - TP1 y trailing se alcanzan más a menudo; la gestión intenta capturar **tramos rápidos** y proteger rápido el capital.
 
-### 6.2 Flips violentos en el libro (`INVALID_IMB`)
+###  Flips violentos en el libro (`INVALID_IMB`)
 
 - Si el order book se voltea de forma brutal en contra de la posición (imbalance extremo sostenido varios ticks), se asume que:
   - la liquidez pasiva clave desapareció o se movió,
   - la tesis inicial dejó de ser válida.
 - El bot cierra la operación anticipadamente con razón `INVALID_IMB`.
 
-### 6.3 Trades que no despegan (`NO_PROGRESS`)
+###  Trades que no despegan (`NO_PROGRESS`)
 
 - Caso típico:
   - El precio se mueve un poco a favor (tienes MFE),  
@@ -289,7 +290,7 @@ La lógica está pensada para reaccionar distinto según el régimen micro del m
   - y ha pasado un tiempo mínimo.
 - Se cierra el trade **antes** de que se convierta en un TIME_STOP grande y costoso.
 
-### 6.4 Rangos muertos / mercado plano
+###  Rangos muertos / mercado plano
 
 - En rangos con poco flujo:
   - el score tiende a ser más bajo,
